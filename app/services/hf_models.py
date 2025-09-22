@@ -6,7 +6,12 @@ import logging
 import time
 from typing import Dict, List
 
-from huggingface_hub import ModelFilter, list_models
+from huggingface_hub import list_models
+
+try:
+    from huggingface_hub import ModelFilter  # type: ignore
+except ImportError:  # pragma: no cover - depends on huggingface_hub version
+    ModelFilter = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +23,26 @@ def _fetch_trending_models() -> List[Dict[str, object]]:
     """Synchronously query the Hugging Face hub for trending TTS models."""
 
     logger.info("Fetching trending text-to-speech models from Hugging Face")
-    models = list_models(
-        filter=ModelFilter(task="text-to-speech"),
-        sort="trending",
-        limit=20,
-    )
+    list_models_kwargs = {
+        "sort": "trending",
+        # Request more models when we cannot rely on server-side filtering
+        # so that post-filtering still returns roughly ``limit`` results.
+        "limit": 40 if ModelFilter is None else 20,
+    }
+
+    if ModelFilter is not None:
+        list_models_kwargs["filter"] = ModelFilter(task="text-to-speech")
+
+    models = list_models(**list_models_kwargs)
     results: List[Dict[str, object]] = []
 
     for model in models:
+        if ModelFilter is None and getattr(model, "pipeline_tag", None) != "text-to-speech":
+            # ``huggingface_hub`` versions without ``ModelFilter`` support do not
+            # provide server-side filtering.  Perform a lightweight client-side
+            # filter instead to maintain backwards compatibility.
+            continue
+
         results.append(
             {
                 "id": model.modelId,
@@ -37,6 +54,9 @@ def _fetch_trending_models() -> List[Dict[str, object]]:
                 "last_modified": model.lastModified.isoformat() if model.lastModified else None,
             }
         )
+
+        if len(results) >= 20:
+            break
 
     return results
 
