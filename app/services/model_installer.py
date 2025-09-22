@@ -20,6 +20,65 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CACHE_DIR = Path(os.environ.get("MULTI_TTS_MODEL_CACHE", "./.cache/models")).resolve()
 
 
+def _any_keyword_in_string(value: str | None, keywords: Iterable[str]) -> bool:
+    if not value:
+        return False
+    value_lower = value.lower()
+    return any(keyword in value_lower for keyword in keywords)
+
+
+def _iter_card_strings(card_data: dict | None) -> Iterable[str]:
+    if not isinstance(card_data, dict):
+        return []
+
+    stack: List[object] = [card_data]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            stack.extend(current.values())
+            stack.extend(current.keys())
+        elif isinstance(current, (list, tuple, set)):
+            stack.extend(current)
+        elif isinstance(current, str):
+            yield current
+
+
+def _info_matches_keywords(info: ModelInfo, keywords: Iterable[str]) -> bool:
+    keyword_set = {keyword.lower() for keyword in keywords}
+    if _any_keyword_in_string(info.modelId, keyword_set):
+        return True
+    if _any_keyword_in_string(info.library_name, keyword_set):
+        return True
+    if _any_keyword_in_string(getattr(info, "pipeline_tag", None), keyword_set):
+        return True
+
+    for tag in info.tags or []:
+        if _any_keyword_in_string(tag, keyword_set):
+            return True
+
+    for sibling in getattr(info, "siblings", []) or []:
+        if _any_keyword_in_string(getattr(sibling, "rfilename", None), keyword_set):
+            return True
+
+    for entry in _iter_card_strings(info.cardData):
+        if _any_keyword_in_string(entry, keyword_set):
+            return True
+
+    return False
+
+
+def is_kokoro_model(info: ModelInfo) -> bool:
+    """Return ``True`` if *info* appears to describe a Kokoro model."""
+
+    return _info_matches_keywords(info, {"kokoro", "kokoro-onnx"})
+
+
+def is_coqui_model(info: ModelInfo) -> bool:
+    """Return ``True`` if *info* appears to describe a Coqui TTS/XTTS model."""
+
+    return _info_matches_keywords(info, {"coqui", "xtts"})
+
+
 @dataclass(slots=True)
 class PreparedModel:
     """Metadata returned after ensuring a model has been downloaded locally."""
@@ -91,14 +150,22 @@ class ModelInstaller:
     # ------------------------------------------------------------------
     def _requirements_from_library(self, info: ModelInfo) -> Set[str]:
         library = (info.library_name or "").lower()
-        tags = {tag.lower() for tag in info.tags or []}
+        tags = {tag.lower() for tag in info.tags or [] if isinstance(tag, str)}
 
         requirements: Set[str] = set()
 
-        if library in {"tts", "coqui", "coqui-tts"} or any(tag in tags for tag in {"xtts", "coqui"}):
+        if (
+            library in {"tts", "coqui", "coqui-tts"}
+            or any(tag in tags for tag in {"xtts", "coqui"})
+            or is_coqui_model(info)
+        ):
             requirements.add("TTS>=0.22.0")
 
-        if library in {"kokoro", "kokoro-onnx"} or "kokoro" in tags:
+        if (
+            library in {"kokoro", "kokoro-onnx"}
+            or "kokoro" in tags
+            or is_kokoro_model(info)
+        ):
             requirements.add("kokoro-onnx>=0.1.0")
 
         if library in {"piper", "piper-tts"} or "piper" in tags:
@@ -172,5 +239,5 @@ class ModelInstaller:
         subprocess.check_call(cmd)
 
 
-__all__ = ["ModelInstaller", "PreparedModel"]
+__all__ = ["ModelInstaller", "PreparedModel", "is_coqui_model", "is_kokoro_model"]
 

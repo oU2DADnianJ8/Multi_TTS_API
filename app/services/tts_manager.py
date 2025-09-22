@@ -12,7 +12,12 @@ from typing import Any, Dict, Iterable, List, Tuple
 import numpy as np
 import torch
 
-from app.services.model_installer import ModelInstaller, PreparedModel
+from app.services.model_installer import (
+    ModelInstaller,
+    PreparedModel,
+    is_coqui_model,
+    is_kokoro_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +154,34 @@ class _CoquiSynthesizer(_BaseSynthesizer):
         self._sample_rate = self._infer_sample_rate()
 
     def _find_model_file(self, model_path: Path) -> Path | None:
-        candidates = list(model_path.glob("**/*.pth")) + list(model_path.glob("**/*.pt"))
-        return candidates[0] if candidates else None
+        patterns = ("model.pth", "**/model.pth", "**/*.pth", "**/*.pt")
+        candidates: List[Path] = []
+        for pattern in patterns:
+            for path in model_path.glob(pattern):
+                if path.is_file():
+                    candidates.append(path)
+            if candidates:
+                break
+
+        if not candidates:
+            return None
+
+        def sort_key(path: Path) -> Tuple[int, int, str]:
+            name = path.name.lower()
+            priority = 2
+            if name == "model.pth":
+                priority = 0
+            elif name.endswith("model.pth") or "model" in name:
+                priority = 1
+            return (priority, len(path.relative_to(model_path).parts), str(path))
+
+        candidates.sort(key=sort_key)
+        return candidates[0]
 
     def _find_config_file(self, model_path: Path) -> Path | None:
         for name in ("config.json", "config.yaml", "config.yml"):
-            candidate = next(model_path.glob(f"**/{name}"), None)
-            if candidate:
+            candidate = next((path for path in model_path.glob(f"**/{name}") if path.is_file()), None)
+            if candidate is not None:
                 return candidate
         return None
 
@@ -251,11 +277,20 @@ class TTSManager:
     def _candidate_factories(self, prepared: PreparedModel) -> List[_SynthCandidate]:
         info = prepared.info
         library = (info.library_name or "").lower()
-        tags = {tag.lower() for tag in info.tags or []}
+        tags = {tag.lower() for tag in info.tags or [] if isinstance(tag, str)}
+        model_id_lower = prepared.model_id.lower()
+        cache_dir_name = prepared.local_path.name.lower()
 
         candidates: List[_SynthCandidate] = []
 
-        if library in {"kokoro", "kokoro-onnx"} or "kokoro" in tags:
+        kokoro_hint = (
+            library in {"kokoro", "kokoro-onnx"}
+            or "kokoro" in tags
+            or "kokoro" in model_id_lower
+            or "kokoro" in cache_dir_name
+            or is_kokoro_model(info)
+        )
+        if kokoro_hint:
             candidates.append(
                 _SynthCandidate(
                     name="kokoro",
@@ -263,7 +298,16 @@ class TTSManager:
                 )
             )
 
-        if library in {"tts", "coqui", "coqui-tts"} or any(tag in tags for tag in {"xtts", "coqui"}):
+        coqui_hint = (
+            library in {"tts", "coqui", "coqui-tts"}
+            or any(tag in tags for tag in {"xtts", "coqui"})
+            or "xtts" in model_id_lower
+            or "coqui" in model_id_lower
+            or "xtts" in cache_dir_name
+            or "coqui" in cache_dir_name
+            or is_coqui_model(info)
+        )
+        if coqui_hint:
             candidates.append(
                 _SynthCandidate(
                     name="coqui",
