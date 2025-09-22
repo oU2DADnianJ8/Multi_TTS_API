@@ -159,7 +159,7 @@ class ModelInstaller:
             or any(tag in tags for tag in {"xtts", "coqui"})
             or is_coqui_model(info)
         ):
-            requirements.add("TTS>=0.22.0")
+            requirements.add("TTS==0.22.0")
 
         if (
             library in {"kokoro", "kokoro-onnx"}
