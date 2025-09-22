@@ -25,14 +25,38 @@ class TTSManager:
         load_kwargs = {}
         if self._torch_dtype is not None:
             load_kwargs["torch_dtype"] = self._torch_dtype
-        try:
-            logger.info("Loading text-to-speech model '%s'", model_id)
+
+        def _attempt_load(**extra_kwargs: object) -> object:
             return pipeline(
                 task="text-to-speech",
                 model=model_id,
                 device=self._device,
                 **load_kwargs,
+                **extra_kwargs,
             )
+
+        logger.info("Loading text-to-speech model '%s'", model_id)
+
+        try:
+            return _attempt_load()
+        except ValueError as exc:
+            message = str(exc)
+            if "Unrecognized model" not in message and "trust_remote_code" not in message:
+                logger.exception("Failed to load model '%s'", model_id)
+                raise RuntimeError(f"Unable to load model '{model_id}': {exc}") from exc
+
+            logger.warning(
+                "Model '%s' requires trusting remote code; retrying with trust_remote_code=True.",
+                model_id,
+            )
+
+            try:
+                return _attempt_load(trust_remote_code=True)
+            except Exception as retry_exc:  # pragma: no cover - defensive logging
+                logger.exception("Failed to load model '%s' with trusted remote code", model_id)
+                raise RuntimeError(
+                    f"Unable to load model '{model_id}' even with trusted remote code: {retry_exc}"
+                ) from retry_exc
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.exception("Failed to load model '%s'", model_id)
             raise RuntimeError(f"Unable to load model '{model_id}': {exc}") from exc
@@ -63,11 +87,28 @@ class TTSManager:
 
         def _run_inference() -> Tuple[object, int]:
             result = pipeline_obj(text)
-            if not isinstance(result, dict) or "audio" not in result or "sampling_rate" not in result:
+
+            if isinstance(result, list):
+                if not result:
+                    raise RuntimeError("Pipeline returned an empty result list.")
+                result = result[0]
+
+            if not isinstance(result, dict):
+                raise RuntimeError("Unexpected output type from pipeline; expected a dictionary response.")
+
+            audio_payload = result.get("audio")
+            sampling_rate = result.get("sampling_rate")
+
+            if isinstance(audio_payload, dict):
+                sampling_rate = sampling_rate or audio_payload.get("sampling_rate")
+                audio_payload = audio_payload.get("array") or audio_payload.get("bytes")
+
+            if sampling_rate is None or audio_payload is None:
                 raise RuntimeError(
-                    "Unexpected output from pipeline; expected keys 'audio' and 'sampling_rate'."
+                    "Unexpected output from pipeline; expected 'audio' content and a 'sampling_rate'."
                 )
-            return result["audio"], int(result["sampling_rate"])
+
+            return audio_payload, int(sampling_rate)
 
         audio, sample_rate = await asyncio.to_thread(_run_inference)
         return audio, sample_rate
