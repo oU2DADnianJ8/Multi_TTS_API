@@ -13,8 +13,9 @@ interactive single-page web console for effortless experimentation.
   `text-to-speech` models directly from Hugging Face.
 - **Dynamic model loading & caching** – models are downloaded and cached on
   demand, with automatic GPU acceleration when CUDA is available.
-- **Modern web GUI** – a responsive SPA served from the backend allows you to
-  browse models, submit prompts, and play the generated speech instantly.
+- **Modern web GUI** – a responsive SPA served from the backend lets you tick
+  multiple models, trigger the bundled sample prompt, or stream custom text
+  straight from your browser.
 - **Production-ready FastAPI stack** – CORS, health checks, async streaming, and
   structured error handling included out of the box.
 
@@ -100,10 +101,11 @@ extending `app/utils/audio.py`.
 
 ### Web console
 
-Navigate to <http://localhost:8000/>. The page automatically fetches the model
-catalogue, lets you pick a model, submit text, and plays the streamed audio once
-available. The UI is ideal for smoke-testing models before integrating the API
-into your own tooling.
+Navigate to <http://localhost:8000/>. The page automatically fetches the top 20
+trending models, lets you tick checkboxes to queue multiple voices, and offers
+buttons for either the bundled sample prompt or any custom text you enter. Each
+model renders its own audio player so you can compare outputs side-by-side
+before integrating the API into your own tooling.
 
 ## Caching & performance notes
 
