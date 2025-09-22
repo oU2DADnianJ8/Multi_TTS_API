@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-Model Streaming TTS API</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top, rgba(76, 106, 255, 0.1), transparent 45%),
+          radial-gradient(circle at bottom, rgba(118, 214, 255, 0.1), transparent 55%);
+        min-height: 100vh;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        color: #1f2933;
+        background-color: rgba(255, 255, 255, 0.92);
+      }
+
+      header {
+        padding: 3rem 1.5rem 2rem;
+        text-align: center;
+        background: linear-gradient(135deg, rgba(76, 106, 255, 0.85), rgba(118, 214, 255, 0.85));
+        color: #fff;
+        box-shadow: 0 8px 32px rgba(30, 64, 175, 0.25);
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3rem);
+        letter-spacing: -0.02em;
+      }
+
+      header p {
+        margin: 1rem auto 0;
+        max-width: 760px;
+        line-height: 1.5;
+        font-size: 1.05rem;
+        opacity: 0.9;
+      }
+
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 4rem;
+        display: grid;
+        gap: 2.5rem;
+      }
+
+      section {
+        background: rgba(255, 255, 255, 0.75);
+        border-radius: 1.25rem;
+        padding: 2rem;
+        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+        backdrop-filter: blur(14px);
+      }
+
+      h2 {
+        margin-top: 0;
+        font-size: 1.5rem;
+        color: #1a237e;
+      }
+
+      .model-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 1rem;
+        margin-top: 1.5rem;
+      }
+
+      .model-card {
+        padding: 1rem;
+        border-radius: 1rem;
+        border: 1px solid rgba(99, 102, 241, 0.2);
+        background: rgba(244, 247, 255, 0.8);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .model-card:hover {
+        border-color: rgba(99, 102, 241, 0.55);
+        box-shadow: 0 12px 30px rgba(99, 102, 241, 0.18);
+      }
+
+      .model-card input {
+        margin-right: 0.75rem;
+        transform: scale(1.1);
+      }
+
+      .model-meta {
+        margin: 0.4rem 0 0 2.1rem;
+        font-size: 0.9rem;
+        color: #475569;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 160px;
+        padding: 1rem;
+        border-radius: 1rem;
+        border: 1px solid rgba(148, 163, 184, 0.6);
+        font-size: 1rem;
+        line-height: 1.5;
+        resize: vertical;
+        background: rgba(248, 250, 252, 0.9);
+      }
+
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        background: linear-gradient(135deg, #4f46e5, #00c4ff);
+        color: #fff;
+        border: none;
+        padding: 0.85rem 1.8rem;
+        font-weight: 600;
+        font-size: 1rem;
+        border-radius: 999px;
+        cursor: pointer;
+        box-shadow: 0 16px 35px rgba(79, 70, 229, 0.35);
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+        margin-top: 1.25rem;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 20px 40px rgba(79, 70, 229, 0.4);
+      }
+
+      button:disabled {
+        cursor: progress;
+        opacity: 0.65;
+        box-shadow: none;
+        transform: none;
+      }
+
+      #status {
+        margin-top: 1.25rem;
+        font-size: 0.95rem;
+        color: #475569;
+      }
+
+      .status-error {
+        color: #c53030;
+      }
+
+      .muted {
+        opacity: 0.7;
+      }
+
+      audio {
+        width: 100%;
+        margin-top: 1.5rem;
+        border-radius: 0.75rem;
+        background: rgba(15, 23, 42, 0.08);
+        padding: 0.75rem;
+      }
+
+      @media (max-width: 720px) {
+        main {
+          padding: 2rem 1rem 3.5rem;
+        }
+
+        section {
+          padding: 1.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Multi-Model Streaming TTS API</h1>
+      <p>
+        Self-host a powerful, OpenAI-compatible text-to-speech service powered by the top trending
+        models from the Hugging Face Hub. Select a model, enter some text, and listen to the streamed
+        audio results instantly.
+      </p>
+    </header>
+
+    <main>
+      <section>
+        <h2>1. Choose a Hugging Face TTS model</h2>
+        <p class="muted">
+          The list below refreshes automatically from the Hugging Face trending API. Check a model to
+          target it for inference (only one selection is supported at a time).
+        </p>
+        <div id="models-list" class="model-grid">
+          <p class="muted">Loading model catalogue…</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>2. Generate speech</h2>
+        <p class="muted">
+          Provide any text prompt and click <strong>Synthesise &amp; Play</strong>. The backend will stream
+          a WAV audio payload created with the selected model. Playback starts automatically once the
+          audio buffer has been received.
+        </p>
+        <textarea id="input-text" placeholder="Type something inspiring…">Welcome to your fully self-hosted, OpenAI-style text to speech API powered by Hugging Face models!</textarea>
+        <button id="synth-button">🎧 Synthesise &amp; Play</button>
+        <div id="status" class="muted">Ready when you are.</div>
+        <audio id="audio-player" controls preload="auto"></audio>
+      </section>
+    </main>
+
+    <script>
+      const modelsList = document.getElementById("models-list");
+      const synthButton = document.getElementById("synth-button");
+      const textInput = document.getElementById("input-text");
+      const statusEl = document.getElementById("status");
+      const audioPlayer = document.getElementById("audio-player");
+      let currentAudioUrl = null;
+
+      function setStatus(message, isError = false) {
+        statusEl.textContent = message;
+        statusEl.classList.toggle("status-error", isError);
+      }
+
+      function renderModels(models) {
+        if (!Array.isArray(models) || models.length === 0) {
+          modelsList.innerHTML = '<p class="muted">No models were returned from Hugging Face. Try refreshing later.</p>';
+          return;
+        }
+
+        modelsList.innerHTML = "";
+        models.forEach((model, index) => {
+          const card = document.createElement("label");
+          card.className = "model-card";
+
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.name = "model-selection";
+          checkbox.value = model.id;
+          checkbox.checked = index === 0;
+          checkbox.addEventListener("change", (event) => {
+            if (event.target.checked) {
+              document
+                .querySelectorAll('input[name="model-selection"]')
+                .forEach((other) => {
+                  if (other !== event.target) {
+                    other.checked = false;
+                  }
+                });
+            }
+          });
+
+          const title = document.createElement("div");
+          title.style.fontWeight = "600";
+          title.style.fontSize = "1rem";
+          title.textContent = model.id;
+
+          const meta = document.createElement("div");
+          meta.className = "model-meta";
+          const parts = [];
+          if (model.pipeline_tag) {
+            parts.push(`pipeline: ${model.pipeline_tag}`);
+          }
+          if (typeof model.likes === "number") {
+            parts.push(`❤ ${model.likes}`);
+          }
+          if (typeof model.downloads === "number") {
+            parts.push(`⬇ ${model.downloads}`);
+          }
+          meta.textContent = parts.join(" · ") || "";
+
+          card.appendChild(checkbox);
+          card.appendChild(title);
+          card.appendChild(meta);
+          modelsList.appendChild(card);
+        });
+      }
+
+      async function loadModels() {
+        try {
+          const response = await fetch("/api/models");
+          if (!response.ok) {
+            throw new Error(`Request failed with status ${response.status}`);
+          }
+          const payload = await response.json();
+          renderModels(payload.models || []);
+        } catch (error) {
+          console.error("Unable to load models", error);
+          modelsList.innerHTML =
+            '<p class="muted status-error">Unable to load trending models. Check the server logs for details.</p>';
+        }
+      }
+
+      async function synthesize() {
+        const selected = document.querySelector('input[name="model-selection"]:checked');
+        if (!selected) {
+          setStatus("Select a model before synthesising.", true);
+          return;
+        }
+
+        const prompt = textInput.value.trim();
+        if (!prompt) {
+          setStatus("Please provide some text for the synthesiser.", true);
+          return;
+        }
+
+        synthButton.disabled = true;
+        setStatus("Generating speech… this can take a few seconds for first-time model loads.");
+
+        try {
+          const response = await fetch("/v1/audio/speech", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: selected.value, input: prompt, format: "wav" }),
+          });
+
+          if (!response.ok || !response.body) {
+            const errorDetail = await response.json().catch(() => ({}));
+            throw new Error(errorDetail.detail || `Request failed with status ${response.status}`);
+          }
+
+          const reader = response.body.getReader();
+          const chunks = [];
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) chunks.push(value);
+          }
+
+          if (chunks.length === 0) {
+            throw new Error("No audio was returned by the API.");
+          }
+
+          const mimeType = response.headers.get("Content-Type") || "audio/wav";
+          const blob = new Blob(chunks, { type: mimeType });
+
+          if (currentAudioUrl) {
+            URL.revokeObjectURL(currentAudioUrl);
+          }
+
+          currentAudioUrl = URL.createObjectURL(blob);
+          audioPlayer.src = currentAudioUrl;
+          await audioPlayer.play();
+          setStatus("Playback ready! You can adjust the prompt or choose a new model for more experiments.");
+        } catch (error) {
+          console.error("Synthesis failed", error);
+          setStatus(error.message || "Synthesis failed. Check the server logs for more information.", true);
+        } finally {
+          synthButton.disabled = false;
+        }
+      }
+
+      synthButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        synthesize();
+      });
+
+      document.addEventListener("DOMContentLoaded", () => {
+        loadModels();
+      });
+    </script>
+  </body>
+</html>
