@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Dict, Iterable, List
 
+import requests
 from huggingface_hub import list_models
 
 try:
@@ -50,9 +51,47 @@ def _fetch_trending_models() -> List[Dict[str, object]]:
     """Synchronously query the Hugging Face hub for trending TTS models."""
 
     logger.info("Fetching trending text-to-speech models from Hugging Face")
+
+    try:
+        return _fetch_trending_via_http()
+    except Exception as exc:  # pragma: no cover - network access required
+        logger.warning("Trending API request failed: %s; falling back to legacy Hub client.", exc)
+        return _fetch_trending_via_list_models()
+
+
+def _fetch_trending_via_http() -> List[Dict[str, object]]:
+    url = "https://huggingface.co/api/models"
+    params = {
+        "pipeline_tag": "text-to-speech",
+        "sort": "trending",
+        "limit": 50,
+    }
+
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise RuntimeError("Unexpected payload returned by Hugging Face trending endpoint.")
+
+    results: List[Dict[str, object]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        normalised = _normalise_http_model(item)
+        if not normalised.get("id"):
+            continue
+        if normalised.get("pipeline_tag") and normalised.get("pipeline_tag") != "text-to-speech":
+            continue
+        results.append(normalised)
+        if len(results) >= 20:
+            break
+
+    return results
+
+
+def _fetch_trending_via_list_models() -> List[Dict[str, object]]:
     base_kwargs = {
-        # Request more models when we cannot rely on server-side filtering
-        # so that post-filtering still returns roughly ``limit`` results.
         "limit": 40 if ModelFilter is None else 20,
     }
 
@@ -84,14 +123,9 @@ def _fetch_trending_models() -> List[Dict[str, object]]:
             raise last_error
 
     results: List[Dict[str, object]] = []
-
     for model in models:
         if ModelFilter is None and getattr(model, "pipeline_tag", None) != "text-to-speech":
-            # ``huggingface_hub`` versions without ``ModelFilter`` support do not
-            # provide server-side filtering.  Perform a lightweight client-side
-            # filter instead to maintain backwards compatibility.
             continue
-
         results.append(
             {
                 "id": model.modelId,
@@ -103,11 +137,28 @@ def _fetch_trending_models() -> List[Dict[str, object]]:
                 "last_modified": model.lastModified.isoformat() if model.lastModified else None,
             }
         )
-
         if len(results) >= 20:
             break
-
     return results
+
+
+def _normalise_http_model(item: Dict[str, object]) -> Dict[str, object]:
+    pipeline_tag = item.get("pipeline_tag")
+    if not pipeline_tag and isinstance(item.get("tags"), list):
+        for tag in item["tags"]:  # type: ignore[index]
+            if isinstance(tag, str) and tag.startswith("pipeline:"):
+                pipeline_tag = tag.split(":", 1)[1]
+                break
+
+    return {
+        "id": item.get("id") or item.get("modelId") or item.get("name"),
+        "pipeline_tag": pipeline_tag,
+        "likes": item.get("likes") or 0,
+        "downloads": item.get("downloads") or 0,
+        "tags": item.get("tags") or [],
+        "library_name": item.get("library_name"),
+        "last_modified": item.get("lastModified") or item.get("last_modified"),
+    }
 
 
 async def get_trending_tts_models(force_refresh: bool = False) -> List[Dict[str, object]]:

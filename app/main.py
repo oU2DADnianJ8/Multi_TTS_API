@@ -96,7 +96,9 @@ async def generate_speech(payload: SpeechRequest):
         raise HTTPException(status_code=400, detail="Only WAV audio output is currently supported.")
 
     try:
-        audio_array, sample_rate = await tts_manager.synthesize(payload.model, payload.input)
+        audio_array, sample_rate = await tts_manager.synthesize(
+            payload.model, payload.input, voice=payload.voice, language=payload.language
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
