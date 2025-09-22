@@ -135,22 +135,42 @@ class _CoquiSynthesizer(_BaseSynthesizer):
         from TTS.api import TTS  # type: ignore
 
         logger.info("Loading Coqui TTS model '%s'", model_id)
-        model_file = self._find_model_file(model_path)
+        model_dir = self._find_model_directory(model_path)
         config_path = self._find_config_file(model_path)
 
         init_kwargs: Dict[str, Any] = {"progress_bar": False, "gpu": device_index == 0}
 
-        if model_file and config_path:
-            init_kwargs.update({"model_path": str(model_file), "config_path": str(config_path)})
+        if model_dir:
+            init_kwargs["model_path"] = str(model_dir)
+        if config_path:
+            init_kwargs["config_path"] = str(config_path)
+
+        if "model_path" in init_kwargs:
             self._tts = TTS(**init_kwargs)
         else:
             self._tts = TTS(model_name=model_id, **init_kwargs)
 
         self._sample_rate = self._infer_sample_rate()
 
-    def _find_model_file(self, model_path: Path) -> Path | None:
+    def _find_model_directory(self, model_path: Path) -> Path | None:
+        preferred_names = (
+            "model.pth",
+            "model.pt",
+            "best_model.pth",
+            "best_model.pt",
+        )
+        for name in preferred_names:
+            match = next((p for p in model_path.glob(f"**/{name}") if p.is_file()), None)
+            if match:
+                return match.parent
+
         candidates = list(model_path.glob("**/*.pth")) + list(model_path.glob("**/*.pt"))
-        return candidates[0] if candidates else None
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.parent
+            if candidate.is_dir():
+                return candidate
+        return None
 
     def _find_config_file(self, model_path: Path) -> Path | None:
         for name in ("config.json", "config.yaml", "config.yml"):
@@ -252,10 +272,17 @@ class TTSManager:
         info = prepared.info
         library = (info.library_name or "").lower()
         tags = {tag.lower() for tag in info.tags or []}
+        model_id_lower = prepared.model_id.lower()
 
         candidates: List[_SynthCandidate] = []
 
-        if library in {"kokoro", "kokoro-onnx"} or "kokoro" in tags:
+        is_kokoro = (
+            "kokoro" in model_id_lower
+            or library in {"kokoro", "kokoro-onnx"}
+            or "kokoro" in tags
+        )
+
+        if is_kokoro:
             candidates.append(
                 _SynthCandidate(
                     name="kokoro",
@@ -263,7 +290,13 @@ class TTSManager:
                 )
             )
 
-        if library in {"tts", "coqui", "coqui-tts"} or any(tag in tags for tag in {"xtts", "coqui"}):
+        is_coqui = (
+            any(token in model_id_lower for token in ("coqui", "xtts", "vits"))
+            or library in {"tts", "coqui", "coqui-tts"}
+            or any(tag in tags for tag in {"xtts", "coqui"})
+        )
+
+        if is_coqui:
             candidates.append(
                 _SynthCandidate(
                     name="coqui",
