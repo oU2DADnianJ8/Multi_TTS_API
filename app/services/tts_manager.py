@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import inspect
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -143,13 +145,64 @@ class _CoquiSynthesizer(_BaseSynthesizer):
         model_file = self._find_model_file(model_path)
         config_path = self._find_config_file(model_path)
 
-        init_kwargs: Dict[str, Any] = {"progress_bar": False, "gpu": device_index == 0}
+        signature = inspect.signature(TTS.__init__)
+        accepted_params = set(signature.parameters)
+
+        def _filter_kwargs(source: Dict[str, Any]) -> Dict[str, Any]:
+            return {key: value for key, value in source.items() if key in accepted_params}
+
+        base_kwargs: Dict[str, Any] = _filter_kwargs({"progress_bar": False, "gpu": device_index == 0})
+
+        optional_kwargs: Dict[str, Any] = {}
+        for param, patterns in self._optional_resource_patterns().items():
+            if param not in accepted_params:
+                continue
+            resource = self._find_first_matching_file(model_path, patterns)
+            if resource is not None:
+                optional_kwargs[param] = str(resource)
+
+        candidate_kwargs: List[Dict[str, Any]] = []
 
         if model_file and config_path:
-            init_kwargs.update({"model_path": str(model_file), "config_path": str(config_path)})
-            self._tts = TTS(**init_kwargs)
-        else:
-            self._tts = TTS(model_name=model_id, **init_kwargs)
+            candidate_kwargs.append(
+                {**base_kwargs, **optional_kwargs, "model_path": str(model_file), "config_path": str(config_path)}
+            )
+
+            # Some versions of Coqui TTS expect ``model_path`` to point at the
+            # directory containing ``model.pth`` rather than the file itself.
+            # Attempt a second initialisation using the parent directory.
+            if model_file.name.lower().endswith(".pth"):
+                candidate_kwargs.append(
+                    {
+                        **base_kwargs,
+                        **optional_kwargs,
+                        "model_path": str(model_file.parent),
+                        "config_path": str(config_path),
+                    }
+                )
+
+        # Fallback to online loading via model identifier if local files are
+        # unavailable or unusable.  This still benefits from the shared cache
+        # directory because Coqui honours the standard Hugging Face settings.
+        candidate_kwargs.append({**base_kwargs, **optional_kwargs, "model_name": model_id})
+
+        last_error: Exception | None = None
+        for kwargs in candidate_kwargs:
+            try:
+                self._tts = TTS(**_filter_kwargs(kwargs))
+            except Exception as exc:  # pragma: no cover - depends on optional deps
+                last_error = exc
+                logger.debug(
+                    "Coqui initialisation attempt with parameters %s failed: %s",
+                    {key: value for key, value in kwargs.items() if key != "progress_bar"},
+                    exc,
+                )
+                continue
+            else:
+                break
+        else:  # pragma: no cover - defensive branch for unexpected API changes
+            assert last_error is not None
+            raise last_error
 
         self._sample_rate = self._infer_sample_rate()
 
@@ -218,6 +271,55 @@ class _CoquiSynthesizer(_BaseSynthesizer):
                 value = getattr(value, key, None)
         return value
 
+    @staticmethod
+    def _find_first_matching_file(model_path: Path, patterns: Iterable[str]) -> Path | None:
+        for pattern in patterns:
+            candidate = next((path for path in model_path.glob(pattern) if path.is_file()), None)
+            if candidate is not None:
+                return candidate
+        return None
+
+    @staticmethod
+    def _optional_resource_patterns() -> Dict[str, Tuple[str, ...]]:
+        # The Coqui XTTS models rely on a handful of auxiliary artefacts such
+        # as speaker embeddings, vocoder checkpoints and GPT conditioning
+        # latents.  Different model releases occasionally adjust the layout so
+        # we search a variety of common filename patterns for each optional
+        # parameter.  Only resources that are both present on disk and
+        # supported by the installed Coqui ``TTS`` version are forwarded to the
+        # constructor, keeping compatibility with older releases.
+        return {
+            "speakers_file_path": (
+                "speakers_xtts.pth",
+                "**/speakers_xtts.pth",
+                "speakers.pth",
+                "**/speakers.pth",
+            ),
+            "gpt_cond_latents_path": (
+                "gpt_cond_latents.pth",
+                "**/gpt_cond_latents.pth",
+            ),
+            "vocoder_path": (
+                "vocoder.pth",
+                "**/vocoder.pth",
+                "**/vocoder_model.pth",
+                "**/generator.pth",
+            ),
+            "vocoder_config_path": (
+                "vocoder_config.json",
+                "**/vocoder_config.json",
+                "**/config_vocoder.json",
+            ),
+            "language_ids_file_path": (
+                "language_ids.json",
+                "**/language_ids.json",
+            ),
+            "speaker_embeddings_path": (
+                "speaker_embeddings.pth",
+                "**/speaker_embeddings.pth",
+            ),
+        }
+
 
 @dataclass(slots=True)
 class _SynthCandidate:
@@ -283,6 +385,12 @@ class TTSManager:
 
         candidates: List[_SynthCandidate] = []
 
+        def _raise_missing_backend(module: str, package_hint: str) -> _BaseSynthesizer:
+            raise RuntimeError(
+                f"Optional dependency '{module}' is required for model '{prepared.model_id}'. "
+                f"Install {package_hint!s} to enable this backend."
+            )
+
         kokoro_hint = (
             library in {"kokoro", "kokoro-onnx"}
             or "kokoro" in tags
@@ -291,12 +399,20 @@ class TTSManager:
             or is_kokoro_model(info)
         )
         if kokoro_hint:
-            candidates.append(
-                _SynthCandidate(
-                    name="kokoro",
-                    factory=lambda: _KokoroSynthesizer(info.modelId, prepared.local_path, self._device_index),
+            if importlib.util.find_spec("kokoro") is not None:
+                candidates.append(
+                    _SynthCandidate(
+                        name="kokoro",
+                        factory=lambda: _KokoroSynthesizer(info.modelId, prepared.local_path, self._device_index),
+                    )
                 )
-            )
+            else:
+                candidates.append(
+                    _SynthCandidate(
+                        name="kokoro",
+                        factory=lambda: (_raise_missing_backend("kokoro", "kokoro-onnx>=0.1.0")),
+                    )
+                )
 
         coqui_hint = (
             library in {"tts", "coqui", "coqui-tts"}
@@ -308,12 +424,20 @@ class TTSManager:
             or is_coqui_model(info)
         )
         if coqui_hint:
-            candidates.append(
-                _SynthCandidate(
-                    name="coqui",
-                    factory=lambda: _CoquiSynthesizer(info.modelId, prepared.local_path, self._device_index),
+            if importlib.util.find_spec("TTS") is not None:
+                candidates.append(
+                    _SynthCandidate(
+                        name="coqui",
+                        factory=lambda: _CoquiSynthesizer(info.modelId, prepared.local_path, self._device_index),
+                    )
                 )
-            )
+            else:
+                candidates.append(
+                    _SynthCandidate(
+                        name="coqui",
+                        factory=lambda: (_raise_missing_backend("TTS", "TTS>=0.22.0")),
+                    )
+                )
 
         candidates.append(
             _SynthCandidate(
