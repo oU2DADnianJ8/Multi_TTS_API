@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 from huggingface_hub import list_models
 
@@ -13,27 +13,76 @@ try:
 except ImportError:  # pragma: no cover - depends on huggingface_hub version
     ModelFilter = None  # type: ignore
 
+try:
+    from huggingface_hub import ModelSort  # type: ignore
+except ImportError:  # pragma: no cover - depends on huggingface_hub version
+    ModelSort = None  # type: ignore
+
+from requests import HTTPError
+
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 60 * 30  # 30 minutes
 _trending_cache: Dict[str, object] = {"timestamp": 0.0, "data": []}
 
 
+def _sort_candidates() -> Iterable[object]:
+    """Return a sequence of preferred sort orders for ``list_models``."""
+
+    candidates: List[object] = []
+    if ModelSort is not None:
+        for attr in ("TRENDING", "LIKES", "DOWNLOADS"):
+            value = getattr(ModelSort, attr, None)
+            if value is not None and value not in candidates:
+                candidates.append(value)
+    else:  # pragma: no cover - fallback for very old ``huggingface_hub`` versions
+        candidates = ["trending", "likes", "downloads"]
+    return candidates
+
+
+def _describe_sort(sort_value: object) -> str:
+    """Return a human-readable name for a ``list_models`` sort value."""
+
+    return str(getattr(sort_value, "value", sort_value))
+
+
 def _fetch_trending_models() -> List[Dict[str, object]]:
     """Synchronously query the Hugging Face hub for trending TTS models."""
 
     logger.info("Fetching trending text-to-speech models from Hugging Face")
-    list_models_kwargs = {
-        "sort": "trending",
+    base_kwargs = {
         # Request more models when we cannot rely on server-side filtering
         # so that post-filtering still returns roughly ``limit`` results.
         "limit": 40 if ModelFilter is None else 20,
     }
 
     if ModelFilter is not None:
-        list_models_kwargs["filter"] = ModelFilter(task="text-to-speech")
+        base_kwargs["filter"] = ModelFilter(task="text-to-speech")
 
-    models = list_models(**list_models_kwargs)
+    models = []
+    last_error: Exception | None = None
+    for sort_value in _sort_candidates():
+        kwargs = dict(base_kwargs)
+        kwargs["sort"] = sort_value
+
+        try:
+            models = list(list_models(**kwargs))
+        except HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 400:
+                logger.warning(
+                    "Sort '%s' rejected by Hugging Face; falling back to next candidate.",
+                    _describe_sort(sort_value),
+                )
+                last_error = exc
+                continue
+            raise
+        else:
+            break
+    else:  # pragma: no cover - propagate last encountered 400 error if all candidates fail
+        if last_error is not None:
+            raise last_error
+
     results: List[Dict[str, object]] = []
 
     for model in models:
